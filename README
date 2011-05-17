@@ -1,0 +1,6 @@
+Drupal Rules, Token, and Content Profile integration for the sms_framework module.
+
+This code is still in development and not ready for production!
+Eventually needs to be moved into a "real" namespace.
+
+----

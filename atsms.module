@@ -1,0 +1,299 @@
+<?php
+// $Id$
+
+/**
+ * Implementation of hook_form_alter().
+function atsms_form_alter(&$form, $form_state, $form_id) {
+  if (strcmp($form_id, 'atsms_settings_add_form')==0) {
+    unset($form['gateway']['country'] );
+  } else if (strcmp($form_id, 'user_register')==0) {
+    unset($form['account']['status']);
+    unset($form['account']['notify']);
+  } else if (strcmp($form_id, 'user_profile_form')==0) {
+    unset($form['messaging']);
+    unset($form['timezone']);
+  }
+}
+ */
+
+/**
+ * RULES INTEGRATION - ACTIONS
+ */
+
+/**
+ * Implementation of hook_rules_action_info().
+ */
+function atsms_rules_action_info() {
+  return array(
+    'atsms_send_to_role' => array(
+      'label' => t('Send an SMS to all users in a role'),
+      'module' => 'SMS Content Profile User',
+      'eval input' => array(
+        'roleid', 'message', 'contenttype', 'cckfield',
+      ),
+    ),
+    'atsms_send_to_user' => array(
+      'label' => t('Send an SMS to a user'),
+      'module' => 'SMS Content Profile User',
+      'eval input' => array(
+        'user', 'message', 'contenttype', 'cckfield',
+      ),
+    ),
+  );
+}
+
+function atsms_send_to_role($settings) {
+  watchdog('atsms', 'Sending bulk SMS to all users in role '.$settings['roleid']);
+  // lookup content type and field names from IDs
+  $contentprofile_contenttype_arr = array_keys(content_profile_get_types());
+  $contenttype= $contentprofile_contenttype_arr[$settings['contenttype']];
+  $contentprofile_cckfield_arr = array_keys(content_fields());
+  $fieldname= $contentprofile_cckfield_arr[$settings['cckfield']];
+  // iterate through active users in this role
+  $result = db_query("SELECT u.uid, u.name, u.status FROM {users} u INNER JOIN {users_roles} ur ON u.uid=ur.uid WHERE ur.rid = %d AND u.status = 1 ORDER BY u.name ASC", $settings['roleid']);
+  while ($u = db_fetch_object($result)) {
+    $theuser = user_load(array('uid' => $u->uid));
+    $theprofile = content_profile_load($contenttype, $u->uid);
+    $thefield = $theprofile->$fieldname;
+    $thenumber = $thefield[0]['value'];
+    watchdog('atsms', 'Sending bulk SMS to '.$theuser->name.' at number '.$thenumber);
+    $sent = sms_send($thenumber, $settings['message']);
+    if (!$sent) {
+      watchdog('atsms', 'Attempt to send SMS to @number failed.', array('@number' => $thenumber), WATCHDOG_ERROR);
+    }
+  }
+}
+
+function atsms_send_to_role_form($settings = array(), &$form) {
+  $form['settings']['contenttype'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile content type'),
+    '#default_value' => $settings['contenttype'] ?  $settings['contenttype'] : variable_get('atsms_contentprofile_contenttype', 'profile'),
+    '#options' => array_keys(content_profile_get_types()),
+  );
+  $form['settings']['cckfield'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile CCK field containing phone number'),
+    '#default_value' => $settings['cckfield'] ?  $settings['cckfield'] : variable_get('atsms_contentprofile_cckfield', 'field_phone'),
+    '#options' => array_keys(content_fields()),
+  );
+  $form['settings']['roleid'] = array(
+    '#type' => 'radios',
+    '#title' => t('Role'),
+    '#default_value' => $settings['roleid'],
+    '#description' => t('Check the role who should receive this SMS.'),
+    '#options' => user_roles(TRUE),
+  );
+  $form['settings']['message'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Message'),
+    '#default_value' => $settings['message'],
+    '#description' => t("The SMS message, up to 140 chars."),
+  );
+}
+
+function atsms_send_to_user($settings) {
+  // lookup content type and field names from IDs
+  $contentprofile_contenttype_arr = array_keys(content_profile_get_types());
+  $contenttype= $contentprofile_contenttype_arr[$settings['contenttype']];
+  $contentprofile_cckfield_arr = array_keys(content_fields());
+  $fieldname= $contentprofile_cckfield_arr[$settings['cckfield']];
+
+  $theuser = user_load(array('name' => $settings['user'])); # XXX error handling here
+  $theprofile = content_profile_load($contenttype, $theuser->uid);
+  $thefield = $theprofile->$fieldname;
+  $thenumber = $thefield[0]['value'];
+  watchdog('atsms', 'Sending SMS to '.$theuser->name.' at number '.$thenumber);
+  $sent = sms_send($thenumber, $settings['message']);
+  if (!$sent) {
+    watchdog('atsms', 'Attempt to send SMS to @number failed.', array('@number' => $thenumber), WATCHDOG_ERROR);
+  }
+}
+
+function atsms_send_to_user_form($settings = array(), &$form) {
+  $form['settings']['contenttype'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile content type'),
+    '#default_value' => $settings['contenttype'] ?  $settings['contenttype'] : variable_get('atsms_contentprofile_contenttype', 'profile'),
+    '#options' => array_keys(content_profile_get_types()),
+  );
+  $form['settings']['cckfield'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile CCK field containing phone number'),
+    '#default_value' => $settings['cckfield'] ?  $settings['cckfield'] : variable_get('atsms_contentprofile_cckfield', 'field_phone'),
+    '#options' => array_keys(content_fields()),
+  );
+  $form['settings']['user'] = array(
+    '#type' => 'textfield',
+    '#title' => t('User name'),
+    '#default_value' => $settings['user'],
+    '#autocomplete_path' => 'user/autocomplete',
+    '#description' => t('Check the role who should receive this SMS.'),
+  );
+  $form['settings']['message'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Message'),
+    '#default_value' => $settings['message'],
+    '#description' => t("The SMS message, up to 140 chars."),
+  );
+}
+
+/**
+ * RULES INTEGRATION - EVENTS
+ */
+
+/**
+ * Implementation of hook_rules_event_info().
+ */
+function atsms_rules_event_info() {
+  return array(
+    'sms_received' => array(
+      'label' => t('A SMS was received'),
+      'module' => 'SMS',
+      'arguments' => array(
+        'user' => array('type' => 'user', 'label' => t('The user who sent the SMS.')),
+        'sms' => array('type' => 'sms', 'label' => t('The SMS message and metadata.')),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_sms_incoming().
+ */
+function atsms_sms_incoming($op, $sender, $message, $options) {
+  global $user;
+  switch ($op) {
+    case 'pre process':
+      atsms_auth($sender);
+      break;
+    case 'process':
+      $smsobj = array();
+      $smsobj['sender'] = $sender;
+      $smsobj['message'] = $message;
+      $smsobj['to'] = $options['to'];
+      $smsobj['fromcountry'] = $options['fromcountry'];
+      $smsobj['fromcity'] = $options['fromcity'];
+      $smsobj['fromstate'] = $options['fromstate'];
+      $smsobj['fromzip'] = $options['fromzip'];
+      rules_invoke_event('sms_received', $user, (object)$smsobj);
+    case 'post process':
+      atsms_logout();
+      break;
+  }
+}
+
+function atsms_auth($number) {
+  global $user;
+
+  $uid=0; 
+  $contentprofile_contenttype_arr = array_keys(content_profile_get_types());
+  $contenttype= $contentprofile_contenttype_arr[variable_get('atsms_contentprofile_contenttype', 'profile')];
+  $contentprofile_cckfield_arr = array_keys(content_fields());
+  $fieldname= $contentprofile_cckfield_arr[variable_get('atsms_contentprofile_cckfield', 'field_phone')];
+  $result = db_query("SELECT u.uid, u.name, u.status FROM {users} u WHERE u.status = 1 ORDER BY u.uid");
+  while (($u = db_fetch_object($result)) and $uid==0) {
+    $theuser = user_load(array('uid' => $u->uid));
+    $theprofile = content_profile_load($contenttype, $u->uid);
+    $thefield = $theprofile->$fieldname;
+    $thenumber = $thefield[0]['value'];
+    if (strcmp($thenumber,$number)==0) {
+      $uid=$u->uid;
+    }
+  }
+  if ($uid>0) {
+    if ($account = user_load(array('uid' => $uid, 'status' => 1))) {
+      $user = $account;
+      watchdog('atsms', '%name was authenticated using SMS.', array('%name' => $user->name));
+      return $user;
+    }
+  }
+}
+
+function atsms_logout() {
+  global $user;
+
+  // Destroy the current session:
+  session_unset();  
+  $user = drupal_anonymous_user();
+}
+
+/**
+ * TOKEN INTEGRATION
+ */
+
+/**
+ * Implementation of hook_token_values().
+ */
+function atsms_token_values($type, $object = NULL, $options = array()) {
+  if ($type == 'sms' || $type == 'all') {
+    $values['message']          = check_plain($object->message);
+    $values['message-raw']          = $object->message;
+    $values['sender']          = check_plain($object->sender);
+    $values['to']          = check_plain($object->to);
+    $values['fromcountry'] = check_plain($object->fromcountry);
+    $values['fromcity'] = check_plain($object->fromcity);
+    $values['fromstate'] = check_plain($object->fromstate);
+    $values['fromzip'] = check_plain($object->fromzip);
+    return $values;
+  }
+}
+
+/**
+ * Implementation of hook_token_list().
+ */
+function atsms_token_list($type = 'all') {
+  if ($type == 'sms' || $type == 'all') {
+    $tokens['sms']['message']         = t('SMS message text.');
+    $tokens['sms']['message-raw']     = t('SMS message raw text.');
+    $tokens['sms']['sender']      = t('Number the SMS was sent from.');
+    $tokens['sms']['to']      = t('Number the SMS was sent to.');
+    $tokens['sms']['fromcountry'] = t('Country the sender SMS number is registered in');
+    $tokens['sms']['fromcity'] = t('City the sender SMS number is registered in');
+    $tokens['sms']['fromstate'] = t('State the sender SMS number is registered in');
+    $tokens['sms']['fromzip'] = t('ZIP the sender SMS number is registered in');
+    return $tokens;
+  }
+}
+
+##################################################
+
+/**
+ * Implementation of hook_menu().
+ */
+function atsms_menu() {
+  $items['admin/smsframework/atsms'] = array(
+    'title' => 'SMS Content Profile User',
+    'description' => 'Edit options for SMS and user integration via a Content Profile CCK field.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('atsms_admin_settings'),
+    'access arguments' => array('administer atsms'),
+  );
+  return $items;
+}
+
+/**
+ * Implementation of hook_perm()
+ */
+function atsms_perm() { 
+  return array('administer atsms');
+}
+
+function atsms_admin_settings() {  
+  $form['atsms_contentprofile_contenttype'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile content type'),
+  //XXX  '#description' => t('Specify if the site should collect mobile information during registration.'),
+    '#default_value' => variable_get('atsms_contentprofile_contenttype', 'profile'),
+    '#options' => array_keys(content_profile_get_types()),
+  );
+  $form['atsms_contentprofile_cckfield'] = array(
+    '#type' => 'select',
+    '#title' => t('Content Profile CCK field containing phone number'),
+    '#default_value' => variable_get('atsms_contentprofile_cckfield', 'field_phone'),
+    '#options' => array_keys(content_fields()),
+  );
+  return system_settings_form($form);
+}
+
+
